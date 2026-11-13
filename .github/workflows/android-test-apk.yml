@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-testing-apk:
@@ -34,20 +34,39 @@ jobs:
         with:
           packages: ""
 
-      - name: Install Android SDK Platforms & Build Tools
+      - name: Install Android SDK 36.1, 36 & Build-Tools
         shell: bash
         run: |
+          set +o pipefail
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           SDKMANAGER="$(command -v sdkmanager || echo "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager")"
           echo "Using Android SDK at: $SDK_ROOT"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-          if "$SDKMANAGER" --list | grep -q "platforms;android-36.1"; then
-            "$SDKMANAGER" --install "platforms;android-36.1"
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "build-tools;36.0.0" \
+            "platforms;android-36.1" \
+            "platforms;android-36"
+
+      - name: Check Gradle Wrapper presence
+        id: check_wrapper
+        shell: bash
+        run: |
+          if [ -f ./gradlew ] && [ -f ./gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "has_wrapper=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_wrapper=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Gradle & Caching
+      - name: Set up Gradle & Caching (Wrapper)
+        if: steps.check_wrapper.outputs.has_wrapper == 'true'
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Gradle & Caching (Bootstrap 9.3.1)
+        if: steps.check_wrapper.outputs.has_wrapper != 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
 
       - name: Prepare debug keystore & Gradle wrapper permissions
         shell: bash
@@ -68,9 +87,8 @@ jobs:
             fi
           fi
 
-          if [ ! -f ./gradlew ]; then
-            echo "::error::gradlew wrapper script not found in repository root."
-            exit 1
+          if [ ! -f ./gradlew ] || [ ! -f ./gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 9.3.1
           fi
           chmod +x gradlew
 
@@ -92,7 +110,6 @@ jobs:
             exit 1
           fi
 
-          # Verify APK is a valid ZIP/APK container
           unzip -tq "$APK_SOURCE"
 
           mkdir -p dist
@@ -121,6 +138,24 @@ jobs:
           path: dist/IDVANTA-v1.0.0-debug.apk
           retention-days: 30
           if-no-files-found: error
+
+      - name: Publish Testing Pre-release in GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-testing
+          name: IDVANTA v1.0.0 (Testing APK)
+          prerelease: true
+          make_latest: false
+          files: dist/IDVANTA-v1.0.0-debug.apk
+          body: |
+            ### IDVANTA Testing Build (`v1.0.0-testing`)
+            - **APK File:** `IDVANTA-v1.0.0-debug.apk`
+            - **Build Type:** Debug / Testing (debug keystore signed)
+            - **AdMob Config:** Google Official Sample Test IDs (`IS_TEST_AD_CONFIG=true`, no production credentials)
+            - **Minimum SDK:** API 24 (Android 7.0) • **Target SDK:** API 36
+
+            Download `IDVANTA-v1.0.0-debug.apk` directly from **Assets** below to install and test on Android devices.
 
       - name: Upload Build Reports on Failure
         if: failure()
