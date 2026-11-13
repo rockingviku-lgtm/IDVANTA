@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">IDVANTA</string>
+    <string name="brand_subtitle">Professional Document Creator</string>
+    <string name="brand_tagline">Your Identity. Your Documents. Your Style.</string>
+    <string name="brand_credit">Made by Unity</string>
+    <string name="developed_by_team">Seven Ink Digital Developers Team</string>
+    <string name="made_in_india">Made in India 🇮🇳</string>
+    <string name="brand_audience">For School Teachers, Students and Working Professionals.</string>
+    <string name="support_email">seveninkdigitaldevelopers@gmail.com</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_templates">Templates</string>
+    <string name="nav_documents">Documents</string>
+    <string name="nav_bulk">Bulk ID</string>
+    <string name="nav_settings">Settings</string>
+    <string name="action_save_draft">Save Draft</string>
+    <string name="action_export_pdf">Export PDF</string>
+    <string name="action_share_pdf">Share PDF</string>
+    <string name="action_print_pdf">Print PDF</string>
+    <string name="action_save_device">Save to Device</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="delete_confirm_title">Delete Document?</string>
+    <string name="delete_confirm_message">This will permanently remove the document from your local device storage.</string>
+</resources>

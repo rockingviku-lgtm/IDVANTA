@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="exported_pdfs" path="exports/" />
+    <files-path name="media_assets" path="media/" />
+    <cache-path name="shared_cache" path="shared/" />
+</paths>

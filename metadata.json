@@ -1,0 +1,6 @@
+{
+  "name": "IDVANTA",
+  "description": "IDVANTA — Professional Document Creator for CVs, Resumes, School/College/Employee/Teacher ID Cards, Biodata, and Bulk PDF Generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
