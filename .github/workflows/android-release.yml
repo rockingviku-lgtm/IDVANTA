@@ -1,33 +1,23 @@
-name: Manual IDVANTA GitHub Release
+name: IDVANTA Production Release Distribution
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: "Release tag name (e.g. v1.0.0-test or v1.0.0)"
+      release_tag:
+        description: "Release tag / version label (e.g. v1.0.0)"
         required: true
-        default: "v1.0.0-test"
+        default: "v1.0.0"
         type: string
-      release_name:
-        description: "GitHub Release title"
-        required: true
-        default: "IDVANTA v1.0.0 (Testing)"
-        type: string
-      build_type:
-        description: "APK variant to build and attach"
-        required: true
-        default: "debug-testing"
-        type: choice
-        options:
-          - debug-testing
-          - release-signed
-      draft:
-        description: "Keep as Draft Release until manually reviewed and published"
+      create_github_release:
+        description: "Create a Draft GitHub Release with attached APK & AAB"
         required: true
         default: true
         type: boolean
-      prerelease:
-        description: "Mark as Pre-release (recommended for testing APKs)"
+      draft:
+        description: "Keep GitHub Release as Draft until manually reviewed & published"
         required: true
         default: true
         type: boolean
@@ -36,13 +26,66 @@ permissions:
   contents: write
 
 jobs:
-  create-release:
-    name: Build & Attach APK to GitHub Release
+  build-release-distribution:
+    name: Build Signed Release APK & Play App Bundle
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Verify required release environment variables & secrets
+        id: verify_env
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
+          ADMOB_BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT_ID }}
+        shell: bash
+        run: |
+          MISSING=0
+
+          check_required_var() {
+            local var_name="$1"
+            local var_val="$2"
+            if [ -z "$var_val" ]; then
+              echo "::error::Missing required secret/environment variable: $var_name"
+              MISSING=1
+            fi
+          }
+
+          check_required_var "ANDROID_KEYSTORE_BASE64" "$ANDROID_KEYSTORE_BASE64"
+          check_required_var "STORE_PASSWORD" "$STORE_PASSWORD"
+          check_required_var "KEY_PASSWORD" "$KEY_PASSWORD"
+          check_required_var "ADMOB_APP_ID" "$ADMOB_APP_ID"
+          check_required_var "ADMOB_BANNER_AD_UNIT_ID" "$ADMOB_BANNER_AD_UNIT_ID"
+
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::error::Release compilation aborted because one or more required GitHub Secrets are not configured."
+            exit 1
+          fi
+
+          # Guard against shipping Google sample test AdMob IDs or placeholder values in distribution builds
+          if [ "$ADMOB_APP_ID" = "ca-app-pub-3940256099942544~3347511713" ] || \
+             [ "$ADMOB_APP_ID" = "ca-app-pub-0000000000000000~0000000000" ]; then
+            echo "::error::ADMOB_APP_ID must be a valid production AdMob App ID, not a test or placeholder ID."
+            exit 1
+          fi
+
+          if [ "$ADMOB_BANNER_AD_UNIT_ID" = "ca-app-pub-3940256099942544/9214589741" ]; then
+            echo "::error::ADMOB_BANNER_AD_UNIT_ID must be a production AdMob Banner Unit ID, not Google's sample test ID."
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="${{ inputs.release_tag }}"
+          fi
+          RELEASE_TAG="${RELEASE_TAG:-v1.0.0}"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "All required release environment variables verified for release tag: $RELEASE_TAG"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -60,6 +103,7 @@ jobs:
         run: |
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           SDKMANAGER="$(command -v sdkmanager || echo "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager")"
+          echo "Using Android SDK at: $SDK_ROOT"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
           if "$SDKMANAGER" --list | grep -q "platforms;android-36.1"; then
@@ -69,97 +113,114 @@ jobs:
       - name: Set up Gradle & Caching
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Prepare Gradle wrapper permissions
+      - name: Decode upload keystore & prepare Gradle wrapper
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         shell: bash
         run: |
+          KEYSTORE_FILE="${{ runner.temp }}/upload-keystore.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          if [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Decoded upload keystore file is empty."
+            exit 1
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+
           if [ ! -f ./gradlew ]; then
             echo "::error::gradlew wrapper script not found in repository root."
             exit 1
           fi
           chmod +x gradlew
 
-      - name: Build Debug Testing APK
-        if: inputs.build_type == 'debug-testing'
-        shell: bash
-        run: |
-          if [ ! -f debug.keystore ]; then
-            if [ -f debug.keystore.base64 ]; then
-              base64 --decode debug.keystore.base64 > debug.keystore
-            else
-              keytool -genkeypair -v \
-                -keystore debug.keystore \
-                -storepass android \
-                -alias androiddebugkey \
-                -keypass android \
-                -keyalg RSA \
-                -keysize 2048 \
-                -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
-          fi
-
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
-
-          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK_SOURCE"
-          unzip -tq "$APK_SOURCE"
-
-          mkdir -p dist
-          cp "$APK_SOURCE" "dist/IDVANTA-${{ inputs.tag_name }}-debug.apk"
-
-      - name: Build Signed Release APK
-        if: inputs.build_type == 'release-signed'
+      - name: Build Signed Release APK & App Bundle (Distribution)
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
           ADMOB_BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT_ID }}
         shell: bash
+        run: ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+
+      - name: Verify and package release outputs
+        id: package_outputs
+        shell: bash
         run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "::error::Missing release signing secrets (ANDROID_KEYSTORE_BASE64, STORE_PASSWORD, KEY_PASSWORD)."
-            exit 1
-          fi
-          if [ -z "$ADMOB_APP_ID" ] || [ -z "$ADMOB_BANNER_AD_UNIT_ID" ]; then
-            echo "::error::Missing production AdMob secrets (ADMOB_APP_ID, ADMOB_BANNER_AD_UNIT_ID)."
-            exit 1
-          fi
-
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
-          export KEYSTORE_PATH="${{ github.workspace }}/my-upload-key.jks"
-
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
-          rm -f my-upload-key.jks
-
           APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
-          test -s "$APK_SOURCE"
+          AAB_SOURCE="app/build/outputs/bundle/release/app-release.aab"
+
+          if [ ! -s "$APK_SOURCE" ]; then
+            echo "::error::Signed release APK missing or empty at $APK_SOURCE"
+            exit 1
+          fi
+          if [ ! -s "$AAB_SOURCE" ]; then
+            echo "::error::Signed release App Bundle missing or empty at $AAB_SOURCE"
+            exit 1
+          fi
+
           unzip -tq "$APK_SOURCE"
+          unzip -tq "$AAB_SOURCE"
 
+          TAG="${{ steps.verify_env.outputs.release_tag }}"
           mkdir -p dist
-          cp "$APK_SOURCE" "dist/IDVANTA-${{ inputs.tag_name }}-release.apk"
+          APK_TARGET="dist/IDVANTA-${TAG}-release.apk"
+          AAB_TARGET="dist/IDVANTA-${TAG}-release.aab"
+          cp "$APK_SOURCE" "$APK_TARGET"
+          cp "$AAB_SOURCE" "$AAB_TARGET"
 
-      - name: Publish Draft / Pre-release on GitHub
+          APK_BYTES=$(stat -c%s "$APK_TARGET")
+          AAB_BYTES=$(stat -c%s "$AAB_TARGET")
+          APK_MB=$(awk "BEGIN {printf \"%.2f\", $APK_BYTES/1048576}")
+          AAB_MB=$(awk "BEGIN {printf \"%.2f\", $AAB_BYTES/1048576}")
+
+          {
+            echo "## IDVANTA Release Distribution Summary"
+            echo "- **Release Tag:** \`${TAG}\`"
+            echo "- **Signed Release APK:** \`IDVANTA-${TAG}-release.apk\` (${APK_MB} MB)"
+            echo "- **Play Store App Bundle (AAB):** \`IDVANTA-${TAG}-release.aab\` (${AAB_MB} MB)"
+            echo "- **Build Mode:** Production Release (\`IS_TEST_AD_CONFIG=false\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          ls -lh dist/
+
+      - name: Clean up decoded upload keystore
+        if: always()
+        shell: bash
+        run: rm -f "${{ runner.temp }}/upload-keystore.jks"
+
+      - name: Upload Release Distribution Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: IDVANTA-${{ steps.verify_env.outputs.release_tag }}-release-artifacts
+          path: |
+            dist/IDVANTA-*-release.apk
+            dist/IDVANTA-*-release.aab
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create GitHub Release (Draft by default)
+        if: startsWith(github.ref, 'refs/tags/') || inputs.create_github_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name }}
-          name: ${{ inputs.release_name }}
-          draft: ${{ inputs.draft }}
-          prerelease: ${{ inputs.prerelease }}
-          files: dist/*.apk
+          tag_name: ${{ steps.verify_env.outputs.release_tag }}
+          name: IDVANTA ${{ steps.verify_env.outputs.release_tag }}
+          draft: ${{ startsWith(github.ref, 'refs/tags/') && true || inputs.draft }}
+          prerelease: false
+          files: |
+            dist/IDVANTA-*-release.apk
+            dist/IDVANTA-*-release.aab
           body: |
-            ### IDVANTA Android Build (${{ inputs.build_type }})
-            - **Tag:** `${{ inputs.tag_name }}`
+            ### IDVANTA Production Distribution (${{ steps.verify_env.outputs.release_tag }})
             - **Minimum SDK:** API 24 (Android 7.0)
-            - **Ad Configuration:** ${{ inputs.build_type == 'debug-testing' && 'Google Official AdMob Test IDs' || 'Production AdMob Credentials' }}
+            - **Target SDK:** API 36
+            - **Artifacts:** Signed Release `.apk` and Google Play `.aab`
 
-            _Generated manually via GitHub Actions workflow._
+            _Built strictly in release mode (`assembleRelease` & `bundleRelease`) with production signing & AdMob configuration._
 
       - name: Upload Build Reports on Failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: idvanta-release-build-reports
+          name: idvanta-release-failure-reports
           path: |
             app/build/reports/
             app/build/outputs/logs/
