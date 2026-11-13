@@ -1,0 +1,121 @@
+name: Build IDVANTA Testing APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-testing-apk:
+    name: Assemble Debug Testing APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle & Caching
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Prepare debug keystore & Gradle wrapper
+        shell: bash
+        run: |
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 --decode debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          fi
+
+          if [ ! -f ./gradlew ]; then
+            gradle wrapper --gradle-version 9.3.1
+          fi
+          chmod +x gradlew
+
+      - name: Build Debug Testing APK (AdMob Test Configuration)
+        shell: bash
+        run: ./gradlew :app:assembleDebug --stacktrace --info
+
+      - name: Verify and rename Debug APK
+        id: verify_apk
+        shell: bash
+        run: |
+          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK_SOURCE" ]; then
+            echo "::error::Compiled APK not found at $APK_SOURCE"
+            exit 1
+          fi
+          if [ ! -s "$APK_SOURCE" ]; then
+            echo "::error::Compiled APK at $APK_SOURCE is empty (0 bytes)"
+            exit 1
+          fi
+
+          # Verify APK is a valid ZIP/APK container
+          unzip -tq "$APK_SOURCE"
+
+          mkdir -p dist
+          APK_TARGET="dist/IDVANTA-v1.0.0-debug.apk"
+          cp "$APK_SOURCE" "$APK_TARGET"
+
+          APK_SIZE_BYTES=$(stat -c%s "$APK_TARGET")
+          APK_SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $APK_SIZE_BYTES/1048576}")
+          echo "apk_size_bytes=$APK_SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "apk_size_mb=$APK_SIZE_MB" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## IDVANTA Testing APK Build Summary"
+            echo "- **Artifact Name:** \`IDVANTA-v1.0.0-testing-apk\`"
+            echo "- **APK Filename:** \`IDVANTA-v1.0.0-debug.apk\`"
+            echo "- **Build Type:** Debug / Testing (Google Official Sample AdMob Test IDs)"
+            echo "- **Size:** ${APK_SIZE_MB} MB (${APK_SIZE_BYTES} bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          ls -lh "$APK_TARGET"
+
+      - name: Upload Testing APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IDVANTA-v1.0.0-testing-apk
+          path: dist/IDVANTA-v1.0.0-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Build Reports on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idvanta-build-failure-reports
+          path: |
+            app/build/reports/
+            app/build/outputs/logs/
+          retention-days: 14
+          if-no-files-found: ignore
